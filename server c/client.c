@@ -29,14 +29,12 @@ int main(void) {
     hints.ai_family = AF_UNSPEC;     // IPv4 or IPv6
     hints.ai_socktype = SOCK_STREAM;
 
-    // 2. Resolve the server address (::1 for local IPv6)
     if ((rv = getaddrinfo("::1", PORT, &hints, &res)) != 0) {
         fprintf(stderr, "getaddrinfo: %s\n", gai_strerror(rv));
         WSACleanup();
         return 1;
     }
 
-    // 3. Loop through results and connect to the first we can
     for (p = res; p != NULL; p = p->ai_next) {
         if ((sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol)) == INVALID_SOCKET) {
             continue;
@@ -59,17 +57,14 @@ int main(void) {
 
     freeaddrinfo(res); // All done with this structure
 
-    // 4. Get input from user
     printf("Ivesk eilute siuntimui ... --> ");
     if (fgets(sendbuf, BUFSIZE, stdin) != NULL) {
         // Remove newline character if present
         sendbuf[strcspn(sendbuf, "\n")] = 0;
 
-        // 5. Send data
         if (send(sockfd, sendbuf, (int)strlen(sendbuf), 0) == SOCKET_ERROR) {
             fprintf(stderr, "send failed\n");
         } else {
-            // 6. Receive data back
             numbytes = recv(sockfd, buf, BUFSIZE - 1, 0);
             if (numbytes > 0) {
                 buf[numbytes] = '\0'; // Null-terminate the string
@@ -82,7 +77,6 @@ int main(void) {
         }
     }
 
-    // 7. Cleanup
     closesocket(sockfd);
     WSACleanup();
 

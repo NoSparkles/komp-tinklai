@@ -18,7 +18,6 @@ int main(void) {
     char buf[BUFSIZE];
     int rv, numbytes;
 
-    // Initialize Winsock (Beej requirement)
     if (WSAStartup(MAKEWORD(2,2), &wsaData) != 0) {
         fprintf(stderr, "WSAStartup failed\n");
         exit(1);
@@ -34,7 +33,6 @@ int main(void) {
         exit(1);
     }
 
-    // loop through results and bind
     for (p = res; p != NULL; p = p->ai_next) {
         sockfd = socket(p->ai_family, p->ai_socktype, p->ai_protocol);
         if (sockfd == INVALID_SOCKET) continue;
@@ -63,7 +61,6 @@ int main(void) {
     while ((numbytes = recv(new_fd, buf, BUFSIZE, 0)) > 0) {
         printf("Gauta: %.*s\n", numbytes, buf);
 
-        // uppercase like Python .upper()
         for (int i = 0; i < numbytes; i++) {
             if (buf[i] >= 'a' && buf[i] <= 'z')
                 buf[i] -= 32;
