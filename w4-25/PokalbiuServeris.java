@@ -54,7 +54,7 @@ public class PokalbiuServeris {
                         return;
                     }
                     synchronized (vardai) {
-                        if (!vardai.contains(vardai)) {
+                        if (!vardai.contains(vardas)) {
                             vardai.add(vardas);
                             break;
                         }

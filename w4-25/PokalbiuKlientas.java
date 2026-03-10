@@ -75,10 +75,16 @@ public class PokalbiuKlientas {
             if (tekstas.startsWith("ATSIUSKVARDA")) {
                 isvestis.println(koksVardas());
             } else if (tekstas.startsWith("VARDASOK")) {
-                tekstoLaukelis.setEditable(true);
+                SwingUtilities.invokeLater(() -> {
+                    tekstoLaukelis.setEditable(true);
+                    tekstoLaukelis.requestFocusInWindow();
+                });
             } else if (tekstas.startsWith("PRANESIMAS")) {
-                pranesimuSritis.append(tekstas.substring(10) + "\n"); //nuo 10 simbolio 
-            }
+                String pranesimas = tekstas.substring(10);
+                SwingUtilities.invokeLater(() -> {
+                    pranesimuSritis.append(pranesimas + "\n");
+                });
+}
         }
     }
 
