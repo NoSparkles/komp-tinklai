@@ -15,3 +15,7 @@ run-server-linux:
 
 run-client:
 	./client
+
+br-speliotojas:
+	gcc Speliotojas.c -o speliotojas
+	./speliotojas
