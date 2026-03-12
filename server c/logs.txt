@@ -1,0 +1,21 @@
+Vadovui siusta: Sveikas, Vadove. Ivesk skaiciu (0-10):
+Zaidejui siusta: Sveikas, Vadove. Ivesk skaiciu (0-10):
+Zaidejui siusta: Sveikas, Vadove. Ivesk skaiciu (0-10):
+Zaidejui siusta: Sveikas, Vadove. Ivesk skaiciu (0-10):
+Visiems siusta: 
+Zaidimas prasidejo! Vadovas nustate skaiciu.
+Visems siusta: 
+Zaidejas porte 20001 spejo skaiciu: 3
+Zaidejui 9 siusta: 
+Zaidejas porte 20001 spejo skaiciu: 3
+Zaidejui 10 siusta: Tavo eile speti: Visems siusta: 
+Zaidejas porte 20002 spejo skaiciu: 7
+Zaidejui 10 siusta: 
+Zaidejas porte 20002 spejo skaiciu: 7
+Zaidejui 11 siusta: Tavo eile speti: Visems siusta: 
+Zaidejas porte 20003 spejo skaiciu: 6
+Zaidejui 11 siusta: 
+Zaidejas porte 20003 spejo skaiciu: 6
+Zaidejui 9 siusta: Tavo eile speti: Zaidejams siusta: 
+!!! ATSPEJO !!! Zaidejas porte 20001 laimejo. Skaicius buvo: 5
+Zaidejams siusta: Laukiam kol vadovas nustatys nauja skaiciu...
