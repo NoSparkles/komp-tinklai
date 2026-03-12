@@ -4,44 +4,20 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
-#include <sys/wait.h> // Reikalinga procesų valdymui
+#include <sys/select.h>
 
+#define MAX_CLIENTS 30
 #define BUFFER_SIZE 1024
 
-void handle_client(int client_socket) {
-    char buffer[BUFFER_SIZE];
-    char vardas[50];
-    int valread;
+int klientu_soketai[MAX_CLIENTS];
+int pipes[MAX_CLIENTS][2]; // Vamzdžiai komunikacijai: vaikas -> tėvas
 
-    // 1. Paprašome vardo
-    send(client_socket, "ATSIUSKVARDA\n", 13, 0);
-    valread = read(client_socket, buffer, BUFFER_SIZE - 1);
-    if (valread <= 0) {
-        close(client_socket);
-        exit(0);
+void siusti_visiems(const char *zinute) {
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        if (klientu_soketai[i] != -1) {
+            send(klientu_soketai[i], zinute, strlen(zinute), 0);
+        }
     }
-    buffer[valread] = '\0';
-    strtok(buffer, "\r\n");
-    strncpy(vardas, buffer, 49);
-    send(client_socket, "VARDASOK\n", 9, 0);
-
-    // 2. Kliento bendravimo ciklas
-    while ((valread = read(client_socket, buffer, BUFFER_SIZE - 1)) > 0) {
-        buffer[valread] = '\0';
-        strtok(buffer, "\r\n");
-        
-        printf("Klientas %s sako: %s\n", vardas, buffer);
-        
-        // Svarbu: šiame paprastame modelyje vaikas mato tik SAVO klientą.
-        // Norint nusiųsti kitiems, reikėtų sudėtingesnių IPC mechanizmų.
-        char msg[BUFFER_SIZE + 60];
-        sprintf(msg, "TU SAKEI: %s\n", buffer);
-        send(client_socket, msg, strlen(msg), 0);
-    }
-
-    printf("Klientas %s atsijungė.\n", vardas);
-    close(client_socket);
-    exit(0); // Vaikinis procesas baigia darbą
 }
 
 int main(int argc, char *argv[]) {
@@ -53,6 +29,12 @@ int main(int argc, char *argv[]) {
     int portas = atoi(argv[1]);
     int server_fd, naujas_soketas;
     struct sockaddr_in adresas;
+    fd_set readfds;
+
+    for (int i = 0; i < MAX_CLIENTS; i++) {
+        klientu_soketai[i] = -1;
+        pipes[i][0] = -1;
+    }
 
     server_fd = socket(AF_INET, SOCK_STREAM, 0);
     int opt = 1;
@@ -63,33 +45,83 @@ int main(int argc, char *argv[]) {
     adresas.sin_port = htons(portas);
 
     bind(server_fd, (struct sockaddr *)&adresas, sizeof(adresas));
-    listen(server_fd, 5);
+    listen(server_fd, 10);
 
-    printf("Fork-serveris veikia porte %d...\n", portas);
+    printf("Serveris veikia porte %d...\n", portas);
 
     while (1) {
-        int addrlen = sizeof(adresas);
-        naujas_soketas = accept(server_fd, (struct sockaddr *)&adresas, (socklen_t *)&addrlen);
-        
-        if (naujas_soketas < 0) continue;
+        FD_ZERO(&readfds);
+        FD_SET(server_fd, &readfds);
+        int max_fd = server_fd;
 
-        // Sukuriame naują procesą
-        pid_t pid = fork();
+        // Tėvas stebi visus vamzdžius iš vaikų
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (pipes[i][0] != -1) {
+                FD_SET(pipes[i][0], &readfds);
+                if (pipes[i][0] > max_fd) max_fd = pipes[i][0];
+            }
+        }
 
-        if (pid == 0) {
-            // Tai yra VAIKINIS procesas
-            close(server_fd); // Vaikui nereikia klausytis naujų jungčių
-            handle_client(naujas_soketas);
-        } else if (pid > 0) {
-            // Tai yra TĖVINIS procesas
-            close(naujas_soketas); // Tėvui šio konkretaus soketo nebereikia
-            
-            // Sutvarkome baigtus procesus (zombius)
-            waitpid(-1, NULL, WNOHANG);
-        } else {
-            perror("Fork klaida");
+        select(max_fd + 1, &readfds, NULL, NULL, NULL);
+
+        // 1. Naujas klientas jungiasi
+        if (FD_ISSET(server_fd, &readfds)) {
+            naujas_soketas = accept(server_fd, NULL, NULL);
+            for (int i = 0; i < MAX_CLIENTS; i++) {
+                if (klientu_soketai[i] == -1) {
+                    klientu_soketai[i] = naujas_soketas;
+                    pipe(pipes[i]); // Sukuriam vamzdį šiam klientui
+
+                    if (fork() == 0) { // VAIKAS
+                        close(server_fd);
+                        close(pipes[i][0]); // Vaikas tik rašo
+                        
+                        char buffer[BUFFER_SIZE];
+                        char vardas[50];
+                        
+                        // Protokolas
+                        send(naujas_soketas, "ATSIUSKVARDA\n", 13, 0);
+                        int n = read(naujas_soketas, buffer, 49);
+                        buffer[n] = '\0';
+                        strtok(buffer, "\r\n");
+                        strcpy(vardas, buffer);
+                        send(naujas_soketas, "VARDASOK\n", 9, 0);
+
+                        while ((n = read(naujas_soketas, buffer, BUFFER_SIZE)) > 0) {
+                            buffer[n] = '\0';
+                            strtok(buffer, "\r\n");
+                            
+                            char full_msg[BUFFER_SIZE + 100];
+                            snprintf(full_msg, sizeof(full_msg), "PRANESIMAS %s: %s\n", vardas, buffer);
+                            
+                            // Siunčiame tėvui per vamzdį
+                            write(pipes[i][1], full_msg, strlen(full_msg));
+                        }
+                        close(naujas_soketas);
+                        exit(0);
+                    } else { // TĖVAS
+                        close(pipes[i][1]); // Tėvas tik skaito
+                        break;
+                    }
+                }
+            }
+        }
+
+        // 2. Tėvas gavo žinutę iš bet kurio vaiko per vamzdį
+        for (int i = 0; i < MAX_CLIENTS; i++) {
+            if (pipes[i][0] != -1 && FD_ISSET(pipes[i][0], &readfds)) {
+                char msg_from_pipe[BUFFER_SIZE + 100];
+                int n = read(pipes[i][0], msg_from_pipe, sizeof(msg_from_pipe) - 1);
+                if (n <= 0) {
+                    close(pipes[i][0]);
+                    pipes[i][0] = -1;
+                    klientu_soketai[i] = -1;
+                } else {
+                    msg_from_pipe[n] = '\0';
+                    siusti_visiems(msg_from_pipe); // Tėvas išsiunčia visiems!
+                }
+            }
         }
     }
-
     return 0;
 }
