@@ -1,6 +1,6 @@
 ss:
-	gcc PokalbiuServerisSuSelectoriais.c -o serveriss
-	./serveriss 20000
+	gcc PokalbiuServeris.c -o serveris
+	./serveris 20000
 
 c:
 	java PokalbiuKlientas.java
