@@ -6,6 +6,7 @@
 #include <time.h>
 #include <sys/select.h>
 #include <sys/wait.h>
+#include <netinet/in.h>
 
 #define MAX_CLIENTS 30
 #define BUFFER_SIZE 2048
@@ -29,14 +30,27 @@ void run_admin(int port) {
     int node_sockets[3] = {-1, -1, -1}; 
     Klientas human_admin = {-1, "", 0};
     Msg *queue = NULL;
+    char banned_users[100][50];
+    int banned_count = 0;
 
-    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in addr = {AF_INET, htons(port), INADDR_ANY};
-    int opt = 1; setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // Use AF_INET6 for dual-stack support
+    int server_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in6 addr;
+    memset(&addr, 0, sizeof(addr));
+    addr.sin6_family = AF_INET6;
+    addr.sin6_port = htons(port);
+    addr.sin6_addr = in6addr_any; // Accept any address (IPv4 or IPv6)
+
+    int opt = 1; 
+    setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    // Ensure IPv4 users can still connect to this IPv6 socket
+    int v6only = 0;
+    setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+
     bind(server_fd, (struct sockaddr *)&addr, sizeof(addr));
     listen(server_fd, 5);
 
-    printf("[SYSTEM] Admin Hub started on port %d\n", port);
+    printf("[SYSTEM] Admin Hub (Dual-Stack) started on port %d\n", port);
 
     while(1) {
         fd_set fds; FD_ZERO(&fds);
@@ -66,40 +80,36 @@ void run_admin(int port) {
             }
         }
 
-        // Admin Command Handling
         if(human_admin.socket > 0 && FD_ISSET(human_admin.socket, &fds)) {
             char abuf[BUFFER_SIZE];
             int av = recv(human_admin.socket, abuf, BUFFER_SIZE-1, 0);
-            if(av <= 0) human_admin.socket = -1;
+            if(av <= 0) { close(human_admin.socket); human_admin.socket = -1; }
             else {
                 abuf[av] = '\0';
                 if(strncmp(abuf, "#stop", 5) == 0) {
                     char target[50]; sscanf(abuf, "#stop %s", target);
-                    
-                    // 1. Tell both servers to BAN this user immediately
+                    strcpy(banned_users[banned_count++], target);
                     char ban_cmd[100];
                     snprintf(ban_cmd, 100, "BAN|SYSTEM|%s", target);
                     if(node_sockets[1] > 0) send(node_sockets[1], ban_cmd, strlen(ban_cmd), 0);
                     if(node_sockets[2] > 0) send(node_sockets[2], ban_cmd, strlen(ban_cmd), 0);
 
-                    // 2. Clear pending messages from this user in the queue
                     Msg **curr = &queue;
                     while (*curr) {
                         if (strcmp((*curr)->from, target) == 0) {
                             Msg *temp = *curr; *curr = (*curr)->next; free(temp);
                         } else curr = &((*curr)->next);
                     }
-                    send(human_admin.socket, "PRANESIMAS SYSTEM: User kicked and queue purged.\n", 49, 0);
+                    send(human_admin.socket, "PRANESIMAS SYSTEM: User banned.\n", 33, 0);
                 }
             }
         }
 
-        // Messages from S1/S2
         for(int i = 1; i <= 2; i++) {
             if(node_sockets[i] > 0 && FD_ISSET(node_sockets[i], &fds)) {
                 char buf[BUFFER_SIZE];
                 int val = recv(node_sockets[i], buf, sizeof(buf)-1, 0);
-                if(val <= 0) { node_sockets[i] = -1; continue; }
+                if(val <= 0) { close(node_sockets[i]); node_sockets[i] = -1; continue; }
                 buf[val] = '\0';
 
                 char f[50], t[50], c[1024];
@@ -117,19 +127,14 @@ void run_admin(int port) {
             }
         }
 
-        // Queue processing
         time_t now = time(NULL);
         Msg **m = &queue;
         while (*m) {
             if (difftime(now, (*m)->timestamp) >= QUEUE_DELAY) {
                 char out[BUFFER_SIZE];
                 snprintf(out, sizeof(out), "%s|%s|%s", (*m)->to, (*m)->from, (*m)->content);
-                if (strcmp((*m)->to, "@all") == 0) {
-                    send(node_sockets[(*m)->from_sid], out, strlen(out), 0);
-                } else {
-                    int tsid = ((*m)->from_sid == 1) ? 2 : 1;
-                    if(node_sockets[tsid] > 0) send(node_sockets[tsid], out, strlen(out), 0);
-                }
+                int dest = (strcmp((*m)->to, "@all") == 0) ? (*m)->from_sid : (((*m)->from_sid == 1) ? 2 : 1);
+                if(node_sockets[dest] > 0) send(node_sockets[dest], out, strlen(out), 0);
                 Msg *del = *m; *m = (*m)->next; free(del);
             } else m = &((*m)->next);
         }
@@ -139,15 +144,29 @@ void run_admin(int port) {
 // --- Node Logic ---
 void run_node(int my_port, int admin_port, char *id) {
     sleep(1);
-    int admin_fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in a_addr = {AF_INET, htons(admin_port), INADDR_ANY};
+    // Connect to Admin using IPv6 loopback
+    int admin_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in6 a_addr;
+    memset(&a_addr, 0, sizeof(a_addr));
+    a_addr.sin6_family = AF_INET6;
+    a_addr.sin6_port = htons(admin_port);
+    inet_pton(AF_INET6, "::1", &a_addr.sin6_addr);
     connect(admin_fd, (struct sockaddr *)&a_addr, sizeof(a_addr));
+    
     char name_req[50]; recv(admin_fd, name_req, 49, 0);
     send(admin_fd, id, strlen(id), 0);
 
-    int s_fd = socket(AF_INET, SOCK_STREAM, 0);
-    struct sockaddr_in m_addr = {AF_INET, htons(my_port), INADDR_ANY};
+    // Node Server Socket (IPv6 Dual-Stack)
+    int s_fd = socket(AF_INET6, SOCK_STREAM, 0);
+    struct sockaddr_in6 m_addr;
+    memset(&m_addr, 0, sizeof(m_addr));
+    m_addr.sin6_family = AF_INET6;
+    m_addr.sin6_port = htons(my_port);
+    m_addr.sin6_addr = in6addr_any;
+
     int opt = 1; setsockopt(s_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    int v6only = 0; setsockopt(s_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
+    
     bind(s_fd, (struct sockaddr *)&m_addr, sizeof(m_addr));
     listen(s_fd, 5);
 
@@ -163,24 +182,20 @@ void run_node(int my_port, int admin_port, char *id) {
         }
         select(max + 1, &fds, NULL, NULL, NULL);
 
-        // Input from Admin Hub
         if(FD_ISSET(admin_fd, &fds)) {
             char b[BUFFER_SIZE], target[50], sender[50], content[1024];
             int v = recv(admin_fd, b, sizeof(b)-1, 0);
             if(v > 0) {
                 b[v] = '\0';
                 if(sscanf(b, "%[^|]|%[^|]|%[^\n]", target, sender, content) == 3) {
-                    // Check if this is a BAN command
                     if(strcmp(target, "BAN") == 0) {
                         for(int i=0; i<MAX_CLIENTS; i++) {
                             if(clients[i].socket > 0 && strcmp(clients[i].vardas, content) == 0) {
-                                send(clients[i].socket, "PRANESIMAS SYSTEM: You are banned from this server.\n", 52, 0);
-                                close(clients[i].socket);
-                                clients[i].socket = -1;
+                                send(clients[i].socket, "PRANESIMAS SYSTEM: You are banned.\n", 35, 0);
+                                close(clients[i].socket); clients[i].socket = -1;
                             }
                         }
                     } else {
-                        // Normal message delivery
                         char final_msg[BUFFER_SIZE];
                         snprintf(final_msg, BUFFER_SIZE, "PRANESIMAS %s: %s\n", sender, content);
                         for(int i=0; i<MAX_CLIENTS; i++) {
