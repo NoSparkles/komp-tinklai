@@ -29,8 +29,6 @@ void run_admin(int port) {
     int node_sockets[3] = {-1, -1, -1}; 
     Klientas human_admin = {-1, "", 0};
     Msg *queue = NULL;
-    char banned[100][50];
-    int banned_count = 0;
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr = {AF_INET, htons(port), INADDR_ANY};
@@ -77,19 +75,26 @@ void run_admin(int port) {
                 abuf[av] = '\0';
                 if(strncmp(abuf, "#stop", 5) == 0) {
                     char target[50]; sscanf(abuf, "#stop %s", target);
-                    strcpy(banned[banned_count++], target);
+                    
+                    // 1. Tell both servers to BAN this user immediately
+                    char ban_cmd[100];
+                    snprintf(ban_cmd, 100, "BAN|SYSTEM|%s", target);
+                    if(node_sockets[1] > 0) send(node_sockets[1], ban_cmd, strlen(ban_cmd), 0);
+                    if(node_sockets[2] > 0) send(node_sockets[2], ban_cmd, strlen(ban_cmd), 0);
+
+                    // 2. Clear pending messages from this user in the queue
                     Msg **curr = &queue;
                     while (*curr) {
                         if (strcmp((*curr)->from, target) == 0) {
                             Msg *temp = *curr; *curr = (*curr)->next; free(temp);
                         } else curr = &((*curr)->next);
                     }
-                    send(human_admin.socket, "PRANESIMAS SYSTEM: User banned, queue purged.\n", 46, 0);
+                    send(human_admin.socket, "PRANESIMAS SYSTEM: User kicked and queue purged.\n", 49, 0);
                 }
             }
         }
 
-        // Processing messages from S1 and S2
+        // Messages from S1/S2
         for(int i = 1; i <= 2; i++) {
             if(node_sockets[i] > 0 && FD_ISSET(node_sockets[i], &fds)) {
                 char buf[BUFFER_SIZE];
@@ -99,14 +104,11 @@ void run_admin(int port) {
 
                 char f[50], t[50], c[1024];
                 if(sscanf(buf, "%[^|]|%[^|]|%[^\n]", f, t, c) == 3) {
-                    // Admin sees the message IMMEDIATELY with the PRANESIMAS prefix
                     if(human_admin.socket > 0) {
                         char logmsg[BUFFER_SIZE];
                         snprintf(logmsg, BUFFER_SIZE, "PRANESIMAS %s (to %s): %s\n", f, t, c);
                         send(human_admin.socket, logmsg, strlen(logmsg), 0);
                     }
-                    
-                    // Add to 10s queue for cross-server delivery
                     Msg *n = malloc(sizeof(Msg));
                     strcpy(n->from, f); strcpy(n->to, t); strcpy(n->content, c);
                     n->from_sid = i; n->timestamp = time(NULL); n->next = queue;
@@ -115,7 +117,7 @@ void run_admin(int port) {
             }
         }
 
-        // Queue Release Logic (After 10s)
+        // Queue processing
         time_t now = time(NULL);
         Msg **m = &queue;
         while (*m) {
@@ -134,7 +136,7 @@ void run_admin(int port) {
     }
 }
 
-// --- Node Logic (S1/S2) ---
+// --- Node Logic ---
 void run_node(int my_port, int admin_port, char *id) {
     sleep(1);
     int admin_fd = socket(AF_INET, SOCK_STREAM, 0);
@@ -161,18 +163,30 @@ void run_node(int my_port, int admin_port, char *id) {
         }
         select(max + 1, &fds, NULL, NULL, NULL);
 
+        // Input from Admin Hub
         if(FD_ISSET(admin_fd, &fds)) {
             char b[BUFFER_SIZE], target[50], sender[50], content[1024];
             int v = recv(admin_fd, b, sizeof(b)-1, 0);
             if(v > 0) {
                 b[v] = '\0';
                 if(sscanf(b, "%[^|]|%[^|]|%[^\n]", target, sender, content) == 3) {
-                    char final_msg[BUFFER_SIZE];
-                    snprintf(final_msg, BUFFER_SIZE, "PRANESIMAS %s: %s\n", sender, content);
-                    for(int i=0; i<MAX_CLIENTS; i++) {
-                        if(clients[i].socket > 0 && clients[i].nustatytas) {
-                            if(strcmp(target, "@all") == 0 || strcmp(target, clients[i].vardas) == 0) {
-                                send(clients[i].socket, final_msg, strlen(final_msg), 0);
+                    // Check if this is a BAN command
+                    if(strcmp(target, "BAN") == 0) {
+                        for(int i=0; i<MAX_CLIENTS; i++) {
+                            if(clients[i].socket > 0 && strcmp(clients[i].vardas, content) == 0) {
+                                send(clients[i].socket, "PRANESIMAS SYSTEM: You are banned from this server.\n", 52, 0);
+                                close(clients[i].socket);
+                                clients[i].socket = -1;
+                            }
+                        }
+                    } else {
+                        // Normal message delivery
+                        char final_msg[BUFFER_SIZE];
+                        snprintf(final_msg, BUFFER_SIZE, "PRANESIMAS %s: %s\n", sender, content);
+                        for(int i=0; i<MAX_CLIENTS; i++) {
+                            if(clients[i].socket > 0 && clients[i].nustatytas) {
+                                if(strcmp(target, "@all") == 0 || strcmp(target, clients[i].vardas) == 0)
+                                    send(clients[i].socket, final_msg, strlen(final_msg), 0);
                             }
                         }
                     }
@@ -214,7 +228,7 @@ void run_node(int my_port, int admin_port, char *id) {
 }
 
 int main(int argc, char *argv[]) {
-    if (argc < 2) { printf("Usage: %s <BasePort>\n", argv[0]); return 1; }
+    if (argc < 2) { printf("Usage: %s <Port>\n", argv[0]); return 1; }
     int p = atoi(argv[1]);
     if (fork() == 0) run_node(p+1, p, "S1");
     else if (fork() == 0) run_node(p+2, p, "S2");
