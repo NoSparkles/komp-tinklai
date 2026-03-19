@@ -5,7 +5,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sys/select.h>
-#include <netinet/in.h> // Required for IPV6 macros
+#include <netinet/in.h>
 
 #define MAX_CLIENTS 30
 #define BUFFER_SIZE 1024
@@ -29,7 +29,7 @@ int main(int argc, char *argv[]) {
 
     int portas = atoi(argv[1]);
     int server_fd, naujas_soketas;
-    struct sockaddr_in6 adresas; // Changed to sockaddr_in6
+    struct sockaddr_in6 adresas;
     fd_set readfds;
 
     for (int i = 0; i < MAX_CLIENTS; i++) {
@@ -37,7 +37,6 @@ int main(int argc, char *argv[]) {
         pipes[i][0] = -1;
     }
 
-    // 1. Create an IPv6 socket
     server_fd = socket(AF_INET6, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("Socket creation failed");
@@ -47,16 +46,14 @@ int main(int argc, char *argv[]) {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    // 2. IMPORTANT: Turn OFF IPV6_V6ONLY to allow IPv4 connections on the same socket
     int no = 0;
     if (setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no)) < 0) {
         perror("Failed to set IPV6_V6ONLY to 0");
     }
 
-    // 3. Set up the address structure for IPv6
     memset(&adresas, 0, sizeof(adresas));
     adresas.sin6_family = AF_INET6;
-    adresas.sin6_addr = in6addr_any; // This is the IPv6 equivalent of INADDR_ANY
+    adresas.sin6_addr = in6addr_any;
     adresas.sin6_port = htons(portas);
 
     if (bind(server_fd, (struct sockaddr *)&adresas, sizeof(adresas)) < 0) {
@@ -82,7 +79,6 @@ int main(int argc, char *argv[]) {
         select(max_fd + 1, &readfds, NULL, NULL, NULL);
 
         if (FD_ISSET(server_fd, &readfds)) {
-            // Accept can still use generic sockaddr
             struct sockaddr_in6 client_addr;
             socklen_t addr_len = sizeof(client_addr);
             naujas_soketas = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
@@ -126,7 +122,6 @@ int main(int argc, char *argv[]) {
             }
         }
 
-        // Pipe checking logic remains the same...
         for (int i = 0; i < MAX_CLIENTS; i++) {
             if (pipes[i][0] != -1 && FD_ISSET(pipes[i][0], &readfds)) {
                 char msg_from_pipe[BUFFER_SIZE + 100];

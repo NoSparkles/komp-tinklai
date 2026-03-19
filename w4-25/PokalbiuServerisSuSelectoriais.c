@@ -4,7 +4,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/select.h>
-#include <netinet/in.h> // Reikalinga IPv6 makrosams
+#include <netinet/in.h>
 
 #define MAX_CLIENTS 30
 #define BUFFER_SIZE 1024
@@ -33,7 +33,7 @@ int main(int argc, char *argv[]) {
 
     int portas = atoi(argv[1]);
     int server_fd, naujas_soketas, max_fd, activity;
-    struct sockaddr_in6 adresas; // Pakeista į sockaddr_in6
+    struct sockaddr_in6 adresas;
     fd_set readfds;
     char buffer[BUFFER_SIZE];
 
@@ -42,7 +42,6 @@ int main(int argc, char *argv[]) {
         klientai[i].vardas_nustatytas = 0;
     }
 
-    // 1. Sukuriame AF_INET6 lizdą
     server_fd = socket(AF_INET6, SOCK_STREAM, 0);
     if (server_fd < 0) {
         perror("Socket klaida");
@@ -52,16 +51,14 @@ int main(int argc, char *argv[]) {
     int opt = 1;
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-    // 2. Išjungiam IPV6_V6ONLY, kad veiktų Dual-Stack (IPv4 + IPv6)
     int no = 0;
     if (setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &no, sizeof(no)) < 0) {
         perror("IPV6_V6ONLY klaida");
     }
 
-    // 3. Konfigūruojame adresą IPv6 formatu
     memset(&adresas, 0, sizeof(adresas));
     adresas.sin6_family = AF_INET6;
-    adresas.sin6_addr = in6addr_any; // Atitikmuo INADDR_ANY
+    adresas.sin6_addr = in6addr_any;
     adresas.sin6_port = htons(portas);
 
     if (bind(server_fd, (struct sockaddr *)&adresas, sizeof(adresas)) < 0) {
