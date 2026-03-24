@@ -10,7 +10,7 @@
 
 #define MAX_CLIENTS 30
 #define BUFFER_SIZE 2048
-#define QUEUE_DELAY 10
+#define QUEUE_DELAY 5
 
 typedef struct Msg {
     char from[50], to[50], content[1024];
