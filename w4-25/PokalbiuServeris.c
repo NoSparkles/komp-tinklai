@@ -29,8 +29,6 @@ void run_admin(int port) {
     int node_sockets[3] = {-1, -1, -1}; 
     Klientas admin_user = {-1, "", 0}; // The human admin
     Msg *queue = NULL;
-    char banned_users[100][50];
-    int banned_count = 0;
 
     int server_fd = socket(AF_INET, SOCK_STREAM, 0);
     struct sockaddr_in addr = {AF_INET, htons(port), INADDR_ANY};

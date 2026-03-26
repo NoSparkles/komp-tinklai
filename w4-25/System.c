@@ -11,6 +11,11 @@
 #define MAX_CLIENTS 30
 #define BUFFER_SIZE 2048
 #define QUEUE_DELAY 5
+#define MAX_BANNED 100
+
+// Global Ban List (accessible by the check function)
+char banned_users[MAX_BANNED][50];
+int banned_count = 0;
 
 typedef struct Msg {
     char from[50], to[50], content[1024];
@@ -25,25 +30,29 @@ typedef struct {
     int nustatytas;
 } Klientas;
 
+// Helper to check if name is on the list
+int is_banned(const char *name) {
+    for (int i = 0; i < banned_count; i++) {
+        if (strcmp(banned_users[i], name) == 0) return 1;
+    }
+    return 0;
+}
+
 // --- Admin Hub Logic ---
 void run_admin(int port) {
     int node_sockets[3] = {-1, -1, -1}; 
     Klientas human_admin = {-1, "", 0};
     Msg *queue = NULL;
-    char banned_users[100][50];
-    int banned_count = 0;
 
-    // Use AF_INET6 for dual-stack support
     int server_fd = socket(AF_INET6, SOCK_STREAM, 0);
     struct sockaddr_in6 addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin6_family = AF_INET6;
     addr.sin6_port = htons(port);
-    addr.sin6_addr = in6addr_any; // Accept any address (IPv4 or IPv6)
+    addr.sin6_addr = in6addr_any; 
 
     int opt = 1; 
     setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-    // Ensure IPv4 users can still connect to this IPv6 socket
     int v6only = 0;
     setsockopt(server_fd, IPPROTO_IPV6, IPV6_V6ONLY, &v6only, sizeof(v6only));
 
@@ -71,15 +80,23 @@ void run_admin(int port) {
             int r = recv(ns, ident, 49, 0);
             if (r > 0) {
                 ident[r] = '\0'; strtok(ident, "\r\n ");
-                if (strcmp(ident, "S1") == 0) node_sockets[1] = ns;
-                else if (strcmp(ident, "S2") == 0) node_sockets[2] = ns;
-                else {
+                
+                // --- CRITICAL BAN CHECK ON CONNECTION ---
+                if (is_banned(ident)) {
+                    send(ns, "PRANESIMAS SYSTEM: Connection refused. You are banned.\n", 55, 0);
+                    close(ns);
+                } else if (strcmp(ident, "S1") == 0) {
+                    node_sockets[1] = ns;
+                } else if (strcmp(ident, "S2") == 0) {
+                    node_sockets[2] = ns;
+                } else {
                     human_admin.socket = ns; strncpy(human_admin.vardas, ident, 49);
                     human_admin.nustatytas = 1; send(ns, "VARDASOK\n", 9, 0);
                 }
             }
         }
 
+        // Handle Admin #stop command
         if(human_admin.socket > 0 && FD_ISSET(human_admin.socket, &fds)) {
             char abuf[BUFFER_SIZE];
             int av = recv(human_admin.socket, abuf, BUFFER_SIZE-1, 0);
@@ -87,24 +104,33 @@ void run_admin(int port) {
             else {
                 abuf[av] = '\0';
                 if(strncmp(abuf, "#stop", 5) == 0) {
-                    char target[50]; sscanf(abuf, "#stop %s", target);
-                    strcpy(banned_users[banned_count++], target);
-                    char ban_cmd[100];
-                    snprintf(ban_cmd, 100, "BAN|SYSTEM|%s", target);
-                    if(node_sockets[1] > 0) send(node_sockets[1], ban_cmd, strlen(ban_cmd), 0);
-                    if(node_sockets[2] > 0) send(node_sockets[2], ban_cmd, strlen(ban_cmd), 0);
+                    char target[50]; 
+                    if(sscanf(abuf, "#stop %49s", target) == 1) {
+                        // Add to global ban list if not already there
+                        if(!is_banned(target) && banned_count < MAX_BANNED) {
+                            strncpy(banned_users[banned_count++], target, 49);
+                        }
 
-                    Msg **curr = &queue;
-                    while (*curr) {
-                        if (strcmp((*curr)->from, target) == 0) {
-                            Msg *temp = *curr; *curr = (*curr)->next; free(temp);
-                        } else curr = &((*curr)->next);
+                        // Tell all nodes to kick the user immediately
+                        char ban_cmd[100];
+                        snprintf(ban_cmd, 100, "BAN|SYSTEM|%s", target);
+                        if(node_sockets[1] > 0) send(node_sockets[1], ban_cmd, strlen(ban_cmd), 0);
+                        if(node_sockets[2] > 0) send(node_sockets[2], ban_cmd, strlen(ban_cmd), 0);
+
+                        // Clear their pending messages
+                        Msg **curr = &queue;
+                        while (*curr) {
+                            if (strcmp((*curr)->from, target) == 0) {
+                                Msg *temp = *curr; *curr = (*curr)->next; free(temp);
+                            } else curr = &((*curr)->next);
+                        }
+                        send(human_admin.socket, "PRANESIMAS SYSTEM: User banned permanently.\n", 44, 0);
                     }
-                    send(human_admin.socket, "PRANESIMAS SYSTEM: User banned.\n", 33, 0);
                 }
             }
         }
 
+        // Message relay logic...
         for(int i = 1; i <= 2; i++) {
             if(node_sockets[i] > 0 && FD_ISSET(node_sockets[i], &fds)) {
                 char buf[BUFFER_SIZE];
@@ -114,6 +140,9 @@ void run_admin(int port) {
 
                 char f[50], t[50], c[1024];
                 if(sscanf(buf, "%[^|]|%[^|]|%[^\n]", f, t, c) == 3) {
+                    // One last check: don't queue messages from banned users
+                    if(is_banned(f)) continue;
+
                     if(human_admin.socket > 0) {
                         char logmsg[BUFFER_SIZE];
                         snprintf(logmsg, BUFFER_SIZE, "PRANESIMAS %s (to %s): %s\n", f, t, c);
@@ -127,16 +156,36 @@ void run_admin(int port) {
             }
         }
 
+        // Process Queue...
         time_t now = time(NULL);
         Msg **m = &queue;
         while (*m) {
             if (difftime(now, (*m)->timestamp) >= QUEUE_DELAY) {
                 char out[BUFFER_SIZE];
                 snprintf(out, sizeof(out), "%s|%s|%s", (*m)->to, (*m)->from, (*m)->content);
-                int dest = (strcmp((*m)->to, "@all") == 0) ? (*m)->from_sid : (((*m)->from_sid == 1) ? 2 : 1);
-                if(node_sockets[dest] > 0) send(node_sockets[dest], out, strlen(out), 0);
-                Msg *del = *m; *m = (*m)->next; free(del);
-            } else m = &((*m)->next);
+                
+                if (strcmp((*m)->to, "@all") == 0) {
+                    // LOCAL BROADCAST: Send only back to the server the message came from
+                    int origin_sid = (*m)->from_sid;
+                    if (node_sockets[origin_sid] > 0) {
+                        send(node_sockets[origin_sid], out, strlen(out), 0);
+                    }
+                } else {
+                    // PRIVATE MESSAGE: Logic to determine which node the recipient is on
+                    // Since the Hub doesn't keep a global list of which user is on which node,
+                    // the safest way to ensure delivery is to send to both, 
+                    // and let the Nodes decide if they have that user.
+                    if(node_sockets[1] > 0) send(node_sockets[1], out, strlen(out), 0);
+                    if(node_sockets[2] > 0) send(node_sockets[2], out, strlen(out), 0);
+                }
+
+                // Cleanup message from memory
+                Msg *del = *m; 
+                *m = (*m)->next; 
+                free(del);
+            } else {
+                m = &((*m)->next);
+            }
         }
     }
 }
