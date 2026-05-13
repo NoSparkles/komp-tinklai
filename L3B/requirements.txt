@@ -1,0 +1,2 @@
+# Biblioteka HTTP klientui
+requests==2.31.0
