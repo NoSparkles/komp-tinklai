@@ -1,11 +1,17 @@
 import socket
 import os
 import mimetypes
+import json
+import secrets
+from urllib.parse import unquote, urlparse, parse_qs
 
 
 class HTTPProcessor:
     def __init__(self, static_dir='www'):
         self.static_dir = static_dir
+        self.admin_user = "admin"
+        self.admin_pass = "admin"
+        self.sessions = set()
         os.makedirs(self.static_dir, exist_ok=True)
 
     def safe_path(self, path):
@@ -25,7 +31,11 @@ class HTTPProcessor:
         try:
             header_data, body = request_data.split(b'\r\n\r\n', 1)
 
-            header_text = header_data.decode('utf-8', errors='ignore')
+            header_text = header_data.decode(
+                'utf-8',
+                errors='ignore'
+            )
+
             lines = header_text.splitlines()
 
             if not lines:
@@ -37,7 +47,130 @@ class HTTPProcessor:
                 return self.error_response(400, "Bad Request")
 
             method = request_line[0]
-            path = request_line[1]
+            raw_path = request_line[1]
+
+            parsed = urlparse(raw_path)
+
+            path = unquote(parsed.path)
+            query = parse_qs(parsed.query)
+
+            headers = self.parse_headers(header_text)
+
+            # LOGIN
+            if path == "/login" and method == "POST":
+                creds = json.loads(body.decode())
+
+                if (creds.get("username") ==
+                        self.admin_user and
+                        creds.get("password") ==
+                        self.admin_pass):
+
+                    token = secrets.token_hex(16)
+
+                    self.sessions.add(token)
+
+                    response = b'{"success": true}'
+
+                    return self.build_header(
+                        200,
+                        "OK",
+                        "application/json",
+                        len(response),
+                        [
+                            f"Set-Cookie: session={token}; HttpOnly"
+                        ]
+                    ) + response
+
+                return self.error_response(
+                    403,
+                    "Invalid credentials"
+                )
+
+            # ADMIN API
+            if path.startswith("/admin-api"):
+
+                if not self.is_authenticated(headers):
+                    return self.error_response(
+                        403,
+                        "Forbidden"
+                    )
+
+                rel_path = query.get("path", [""])[0]
+
+                folder = self.safe_path(rel_path)
+
+                # LIST
+                if path == "/admin-api/list":
+
+                    if not os.path.exists(folder):
+                        return self.error_response(
+                            404,
+                            "Not Found"
+                        )
+
+                    data = self.list_directory(folder)
+
+                    return self.json_response(data)
+
+                # UPLOAD
+                elif path == "/admin-api/upload":
+
+                    filename = headers.get(
+                        "x-filename",
+                        "file.bin"
+                    )
+
+                    filename = os.path.basename(filename)
+
+                    save_path = os.path.join(
+                        folder,
+                        filename
+                    )
+
+                    os.makedirs(folder, exist_ok=True)
+
+                    with open(save_path, "wb") as f:
+                        f.write(body)
+
+                    return self.success_response(
+                        201,
+                        "Uploaded"
+                    )
+
+                # DELETE
+                elif path == "/admin-api/delete":
+
+                    if not os.path.exists(folder):
+                        return self.error_response(
+                            404,
+                            "Not Found"
+                        )
+
+                    os.remove(folder)
+
+                    return self.success_response(
+                        200,
+                        "Deleted"
+                    )
+
+                # RENAME
+                elif path == "/admin-api/rename":
+
+                    new_name = body.decode().strip()
+
+                    new_name = os.path.basename(new_name)
+
+                    new_path = os.path.join(
+                        os.path.dirname(folder),
+                        new_name
+                    )
+
+                    os.rename(folder, new_path)
+
+                    return self.success_response(
+                        200,
+                        "Renamed"
+                    )
 
             file_path = self.safe_path(path)
 
@@ -53,15 +186,21 @@ class HTTPProcessor:
             elif method == "DELETE":
                 return self.handle_delete(file_path)
 
-            else:
-                return self.error_response(405, "Method Not Allowed")
+            return self.error_response(
+                405,
+                "Method Not Allowed"
+            )
 
         except PermissionError:
             return self.error_response(403, "Forbidden")
 
         except Exception as e:
             print("[!] Server error:", e)
-            return self.error_response(500, "Internal Server Error")
+
+            return self.error_response(
+                500,
+                "Internal Server Error"
+            )
 
     def handle_get(self, file_path):
         if os.path.isdir(file_path):
@@ -156,6 +295,72 @@ class HTTPProcessor:
         ]
 
         return "\r\n".join(headers).encode()
+    
+    def parse_headers(self, header_text):
+        headers = {}
+
+        for line in header_text.splitlines()[1:]:
+            if ":" in line:
+                k, v = line.split(":", 1)
+                headers[k.strip().lower()] = v.strip()
+
+        return headers
+
+
+    def is_authenticated(self, headers):
+        cookie = headers.get("cookie", "")
+
+        for part in cookie.split(";"):
+            if "session=" in part:
+                token = part.split("=", 1)[1].strip()
+
+                if token in self.sessions:
+                    return True
+
+        return False
+
+
+    def json_response(self, data, code=200, message="OK"):
+        body = json.dumps(data).encode()
+
+        return self.build_header(
+            code,
+            message,
+            "application/json",
+            len(body)
+        ) + body
+
+
+    def build_header(self, code, message, mime, length,
+                    extra_headers=None):
+
+        headers = [
+            f"HTTP/1.1 {code} {message}",
+            f"Content-Type: {mime}",
+            f"Content-Length: {length}",
+            "Connection: close"
+        ]
+
+        if extra_headers:
+            headers.extend(extra_headers)
+
+        headers.extend(["", ""])
+
+        return "\r\n".join(headers).encode()
+
+
+    def list_directory(self, folder):
+        result = []
+
+        for item in os.listdir(folder):
+            full = os.path.join(folder, item)
+
+            result.append({
+                "name": item,
+                "is_dir": os.path.isdir(full)
+            })
+
+        return result
 
 
 import threading

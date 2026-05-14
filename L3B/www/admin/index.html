@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<title>Admin Panel</title>
+
+<style>
+body{
+    font-family:Arial;
+    margin:20px;
+}
+
+#dropzone{
+    border:2px dashed #999;
+    padding:40px;
+    margin-top:20px;
+}
+
+.item{
+    padding:6px;
+    border-bottom:1px solid #ddd;
+    cursor:pointer;
+}
+</style>
+</head>
+<body>
+
+<h1>Admin</h1>
+
+<a href="/">Back to Home Page</a>
+
+<hr>
+
+<div id="login">
+    <input id="user" placeholder="Username">
+    <input id="pass" type="password"
+           placeholder="Password">
+
+    <button onclick="login()">
+        Login
+    </button>
+</div>
+
+<div id="panel" style="display:none">
+
+    <h3 id="pathLabel">/</h3>
+
+    <div id="files"></div>
+
+    <div id="dropzone">
+        Drag files here
+    </div>
+
+</div>
+
+<script>
+let currentPath = "";
+
+async function login(){
+
+    const res = await fetch("/login",{
+        method:"POST",
+        body:JSON.stringify({
+            username:user.value,
+            password:pass.value
+        })
+    });
+
+    if(res.ok){
+
+        document.getElementById("login").style.display =
+            "none";
+
+        document.getElementById("panel").style.display =
+            "block";
+
+        loadFolder("");
+
+    }else{
+        alert("Invalid login");
+    }
+}
+
+async function loadFolder(path){
+
+    currentPath = path;
+
+    pathLabel.innerText = "/" + path;
+
+    const res = await fetch(
+        "/admin-api/list?path=" +
+        encodeURIComponent(path)
+    );
+
+    const data = await res.json();
+
+    files.innerHTML = "";
+
+    // Back button
+    if(path){
+
+        const up = document.createElement("div");
+
+        up.className = "item";
+        up.innerHTML = "📁 ..";
+
+        up.onclick = ()=>{
+
+            const parts = path.split("/");
+
+            parts.pop();
+
+            loadFolder(parts.join("/"));
+        };
+
+        files.appendChild(up);
+    }
+
+    data.forEach(item=>{
+
+        const row = document.createElement("div");
+
+        row.className = "item";
+
+        row.style.display = "flex";
+        row.style.alignItems = "center";
+        row.style.gap = "10px";
+
+        const name = document.createElement("div");
+
+        name.style.flex = "1";
+
+        name.innerHTML =
+            (item.is_dir ? "📁 " : "📄 ")
+            + item.name;
+
+        const itemPath =
+            path
+            ? path + "/" + item.name
+            : item.name;
+
+        // Open folders
+        name.onclick = ()=>{
+
+            if(item.is_dir){
+
+                loadFolder(itemPath);
+
+            }
+            else{
+
+                window.location.href =
+                    "/" + itemPath;
+            }
+        };
+
+        // Rename button
+        const renameBtn =
+            document.createElement("button");
+
+        renameBtn.innerText = "Rename";
+
+        renameBtn.onclick = async ()=>{
+
+            const newName = prompt(
+                "New name:",
+                item.name
+            );
+
+            if(!newName) return;
+
+            const res = await fetch(
+                "/admin-api/rename?path=" +
+                encodeURIComponent(itemPath),
+                {
+                    method:"PUT",
+                    body:newName
+                }
+            );
+
+            if(!res.ok){
+
+                alert("Rename failed");
+
+                return;
+            }
+
+            // instant refresh
+            loadFolder(path);
+        };
+
+        // Delete button
+        const deleteBtn =
+            document.createElement("button");
+
+        deleteBtn.innerText = "Delete";
+
+        deleteBtn.onclick = async ()=>{
+
+            if(!confirm(
+                "Delete " + item.name + " ?"
+            )) return;
+
+            const res = await fetch(
+                "/admin-api/delete?path=" +
+                encodeURIComponent(itemPath),
+                {
+                    method:"DELETE"
+                }
+            );
+
+            if(!res.ok){
+
+                alert("Delete failed");
+
+                return;
+            }
+
+            // instant refresh
+            loadFolder(path);
+        };
+
+        row.appendChild(name);
+        row.appendChild(renameBtn);
+        row.appendChild(deleteBtn);
+
+        files.appendChild(row);
+    });
+}
+
+dropzone.ondragover = e=>{
+    e.preventDefault();
+};
+
+dropzone.ondrop = async e=>{
+
+    e.preventDefault();
+
+    for(const file of e.dataTransfer.files){
+
+        const buf = await file.arrayBuffer();
+
+        await fetch(
+            "/admin-api/upload?path=" +
+            encodeURIComponent(currentPath),
+            {
+                method:"POST",
+                headers:{
+                    "X-Filename":file.name
+                },
+                body:buf
+            }
+        );
+    }
+
+    loadFolder(currentPath);
+};
+</script>
+
+</body>
+</html>
