@@ -2,138 +2,234 @@ import socket
 import os
 import mimetypes
 
+
 class HTTPProcessor:
     def __init__(self, static_dir='www'):
         self.static_dir = static_dir
-        if not os.path.exists(self.static_dir):
-            os.makedirs(self.static_dir)
+        os.makedirs(self.static_dir, exist_ok=True)
 
-    def process_request(self, raw_request):
+    def safe_path(self, path):
+        path = os.path.normpath(path).lstrip("/\\")
+        full_path = os.path.abspath(
+            os.path.join(self.static_dir, path)
+        )
+
+        root = os.path.abspath(self.static_dir)
+
+        if not full_path.startswith(root):
+            raise PermissionError("Forbidden")
+
+        return full_path
+
+    def process_request(self, request_data):
         try:
-            parts = raw_request.split(b'\r\n\r\n', 1)
-            header_part = parts[0].decode('utf-8', errors='ignore')
-            body_part = parts[1] if len(parts) > 1 else b""
+            header_data, body = request_data.split(b'\r\n\r\n', 1)
 
-            lines = header_part.splitlines()
+            header_text = header_data.decode('utf-8', errors='ignore')
+            lines = header_text.splitlines()
+
             if not lines:
-                return b""
-            
+                return self.error_response(400, "Bad Request")
+
             request_line = lines[0].split()
+
             if len(request_line) < 2:
-                return self._build_error_response(400, "Bad Request")
+                return self.error_response(400, "Bad Request")
 
             method = request_line[0]
             path = request_line[1]
-            
-            clean_path = path.replace('\\', '/')
-            path_parts = clean_path.lstrip('/').split('/')
-            file_path = os.path.join(self.static_dir, *path_parts)
+
+            file_path = self.safe_path(path)
 
             if method == "GET":
-                if os.path.isdir(file_path):
-                    file_path = os.path.join(file_path, "index.html")
-                
-                if os.path.exists(file_path) and os.path.isfile(file_path):
-                    return self._build_file_response(file_path)
-                return self._build_error_response(404, "Not Found")
+                return self.handle_get(file_path)
 
             elif method == "POST":
-                with open(file_path, 'wb') as f:
-                    f.write(body_part)
-                print(f"[*] Išsaugotas failas: {file_path} ({len(body_part)} bytes)")
-                return self._build_success_response(201, "Created")
+                return self.handle_post(file_path, body)
 
             elif method == "PUT":
-                new_name = body_part.decode('utf-8', errors='ignore').strip()
-                if not new_name:
-                    return self._build_error_response(400, "Missing new name in body")
-                
-                new_file_path = os.path.join(os.path.dirname(file_path), new_name)
-                
-                if os.path.exists(file_path):
-                    os.rename(file_path, new_file_path)
-                    print(f"[*] Pervadinta: {file_path} -> {new_file_path}")
-                    return self._build_success_response(200, f"Renamed to {new_name}")
-                return self._build_error_response(404, "Original file not found")
+                return self.handle_put(file_path, body)
 
             elif method == "DELETE":
-                if os.path.exists(file_path) and os.path.isfile(file_path):
-                    os.remove(file_path)
-                    print(f"[*] Ištrinta: {file_path}")
-                    return self._build_success_response(200, "Deleted")
-                return self._build_error_response(404, "File not found")
+                return self.handle_delete(file_path)
 
             else:
-                return self._build_error_response(405, "Method Not Allowed")
+                return self.error_response(405, "Method Not Allowed")
+
+        except PermissionError:
+            return self.error_response(403, "Forbidden")
 
         except Exception as e:
-            print(f"[!] Logikos klaida: {e}")
-            return self._build_error_response(500, "Internal Server Error")
+            print("[!] Server error:", e)
+            return self.error_response(500, "Internal Server Error")
 
-    def _build_file_response(self, file_path):
+    def handle_get(self, file_path):
+        if os.path.isdir(file_path):
+            file_path = os.path.join(file_path, "index.html")
+
+        if not os.path.exists(file_path):
+            return self.error_response(404, "Not Found")
+
         with open(file_path, 'rb') as f:
             content = f.read()
+
         mime_type, _ = mimetypes.guess_type(file_path)
         mime_type = mime_type or 'application/octet-stream'
-        return self._create_header(200, "OK", mime_type, len(content)) + content
 
-    def _build_success_response(self, code, message):
-        body = f"<html><body><h1>{code} {message}</h1></body></html>".encode('utf-8')
-        return self._create_header(code, message, "text/html", len(body)) + body
+        return self.build_header(
+            200,
+            "OK",
+            mime_type,
+            len(content)
+        ) + content
 
-    def _build_error_response(self, code, message):
-        body = f"<html><body><h1>{code} {message}</h1></body></html>".encode('utf-8')
-        return self._create_header(code, message, "text/html", len(body)) + body
+    def handle_post(self, file_path, body):
+        os.makedirs(os.path.dirname(file_path), exist_ok=True)
 
-    def _create_header(self, code, message, mime_type, length):
-        header = f"HTTP/1.1 {code} {message}\r\n"
-        header += f"Content-Type: {mime_type}\r\n"
-        header += f"Content-Length: {length}\r\n"
-        header += "Connection: close\r\n\r\n"
-        return header.encode('utf-8')
+        with open(file_path, 'wb') as f:
+            f.write(body)
+
+        print(f"[+] Saved: {file_path}")
+
+        return self.success_response(201, "Created")
+
+    def handle_put(self, file_path, body):
+        if not os.path.exists(file_path):
+            return self.error_response(404, "File Not Found")
+
+        new_name = body.decode().strip()
+
+        if not new_name:
+            return self.error_response(400, "Missing new name")
+
+        new_name = os.path.basename(new_name)
+
+        new_path = os.path.join(
+            os.path.dirname(file_path),
+            new_name
+        )
+
+        os.rename(file_path, new_path)
+
+        print(f"[+] Renamed: {file_path} -> {new_path}")
+
+        return self.success_response(200, "Renamed")
+
+    def handle_delete(self, file_path):
+        if not os.path.exists(file_path):
+            return self.error_response(404, "Not Found")
+
+        os.remove(file_path)
+
+        print(f"[+] Deleted: {file_path}")
+
+        return self.success_response(200, "Deleted")
+
+    def success_response(self, code, message):
+        body = f"<h1>{code} {message}</h1>".encode()
+
+        return self.build_header(
+            code,
+            message,
+            "text/html",
+            len(body)
+        ) + body
+
+    def error_response(self, code, message):
+        body = f"<h1>{code} {message}</h1>".encode()
+
+        return self.build_header(
+            code,
+            message,
+            "text/html",
+            len(body)
+        ) + body
+
+    def build_header(self, code, message, mime, length):
+        headers = [
+            f"HTTP/1.1 {code} {message}",
+            f"Content-Type: {mime}",
+            f"Content-Length: {length}",
+            "Connection: close",
+            "",
+            ""
+        ]
+
+        return "\r\n".join(headers).encode()
+
 
 class SimpleHTTPServer:
     def __init__(self, host='127.0.0.1', port=8888):
         self.host = host
         self.port = port
         self.processor = HTTPProcessor()
-        self.server_socket = None
+
+    def receive_request(self, client_socket):
+        data = b""
+
+        while b"\r\n\r\n" not in data:
+            chunk = client_socket.recv(4096)
+
+            if not chunk:
+                return b""
+
+            data += chunk
+
+        headers, body = data.split(b"\r\n\r\n", 1)
+
+        header_text = headers.decode(errors='ignore')
+
+        content_length = 0
+
+        for line in header_text.splitlines():
+            if line.lower().startswith("content-length"):
+                content_length = int(line.split(":")[1].strip())
+
+        while len(body) < content_length:
+            chunk = client_socket.recv(4096)
+
+            if not chunk:
+                break
+
+            body += chunk
+
+        return headers + b"\r\n\r\n" + body
 
     def start(self):
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind((self.host, self.port))
-        self.server_socket.listen(5)
-        print(f"[*] Serveris paruoštas: http://{self.host}:{self.port}")
+        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+
+        server_socket.setsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_REUSEADDR,
+            1
+        )
+
+        server_socket.bind((self.host, self.port))
+        server_socket.listen(5)
+
+        print(f"[*] Running: http://{self.host}:{self.port}")
 
         try:
             while True:
-                client_socket, addr = self.server_socket.accept()
-                client_socket.settimeout(2.0)
-                
-                request_data = b""
-                try:
-                    while True:
-                        chunk = client_socket.recv(8192)
-                        if not chunk:
-                            break
-                        request_data += chunk
-                        if len(chunk) < 8192: 
-                            break
-                except socket.timeout:
-                    pass
-                
-                if request_data:
-                    response = self.processor.process_request(request_data)
+                client_socket, addr = server_socket.accept()
+
+                print(f"[+] Connection: {addr}")
+
+                request = self.receive_request(client_socket)
+
+                if request:
+                    response = self.processor.process_request(request)
                     client_socket.sendall(response)
-                
+
                 client_socket.close()
+
         except KeyboardInterrupt:
-            print("\n[!] Serveris stabdomas...")
+            print("\n[!] Server stopped")
+
         finally:
-            if self.server_socket:
-                self.server_socket.close()
+            server_socket.close()
+
 
 if __name__ == "__main__":
-    server = SimpleHTTPServer(port=8888)
+    server = SimpleHTTPServer()
     server.start()
