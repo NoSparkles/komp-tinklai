@@ -158,15 +158,27 @@ class HTTPProcessor:
         return "\r\n".join(headers).encode()
 
 
+import threading
+
+
 class SimpleHTTPServer:
-    def __init__(self, host='127.0.0.1', port=8888):
-        self.host = host
+    def __init__(self, ipv4_host='127.0.0.1',
+                 ipv6_host='::1',
+                 port=8888):
+
+        self.ipv4_host = ipv4_host
+        self.ipv6_host = ipv6_host
         self.port = port
+
         self.processor = HTTPProcessor()
+
+        self.ipv4_socket = None
+        self.ipv6_socket = None
 
     def receive_request(self, client_socket):
         data = b""
 
+        # Read headers
         while b"\r\n\r\n" not in data:
             chunk = client_socket.recv(4096)
 
@@ -183,8 +195,11 @@ class SimpleHTTPServer:
 
         for line in header_text.splitlines():
             if line.lower().startswith("content-length"):
-                content_length = int(line.split(":")[1].strip())
+                content_length = int(
+                    line.split(":", 1)[1].strip()
+                )
 
+        # Read remaining body
         while len(body) < content_length:
             chunk = client_socket.recv(4096)
 
@@ -195,39 +210,113 @@ class SimpleHTTPServer:
 
         return headers + b"\r\n\r\n" + body
 
-    def start(self):
-        server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    def handle_client(self, client_socket, addr):
+        try:
+            print(f"[+] Connection from: {addr}")
 
-        server_socket.setsockopt(
+            request = self.receive_request(client_socket)
+
+            if request:
+                response = self.processor.process_request(
+                    request
+                )
+
+                client_socket.sendall(response)
+
+        except Exception as e:
+            print("[!] Client error:", e)
+
+        finally:
+            client_socket.close()
+
+    def accept_loop(self, server_socket, label):
+        while True:
+            try:
+                client_socket, addr = server_socket.accept()
+
+                thread = threading.Thread(
+                    target=self.handle_client,
+                    args=(client_socket, addr),
+                    daemon=True
+                )
+
+                thread.start()
+
+            except Exception as e:
+                print(f"[!] {label} accept error:", e)
+
+    def start(self):
+        # IPv4 socket
+        self.ipv4_socket = socket.socket(
+            socket.AF_INET,
+            socket.SOCK_STREAM
+        )
+
+        self.ipv4_socket.setsockopt(
             socket.SOL_SOCKET,
             socket.SO_REUSEADDR,
             1
         )
 
-        server_socket.bind((self.host, self.port))
-        server_socket.listen(5)
+        self.ipv4_socket.bind(
+            (self.ipv4_host, self.port)
+        )
 
-        print(f"[*] Running: http://{self.host}:{self.port}")
+        self.ipv4_socket.listen(5)
+
+        # IPv6 socket
+        self.ipv6_socket = socket.socket(
+            socket.AF_INET6,
+            socket.SOCK_STREAM
+        )
+
+        self.ipv6_socket.setsockopt(
+            socket.SOL_SOCKET,
+            socket.SO_REUSEADDR,
+            1
+        )
+
+        self.ipv6_socket.bind(
+            (self.ipv6_host, self.port)
+        )
+
+        self.ipv6_socket.listen(5)
+
+        print(f"[*] IPv4 running on "
+              f"http://{self.ipv4_host}:{self.port}")
+
+        print(f"[*] IPv6 running on "
+              f"http://[{self.ipv6_host}]:{self.port}")
+
+        # Start accept loops
+        ipv4_thread = threading.Thread(
+            target=self.accept_loop,
+            args=(self.ipv4_socket, "IPv4"),
+            daemon=True
+        )
+
+        ipv6_thread = threading.Thread(
+            target=self.accept_loop,
+            args=(self.ipv6_socket, "IPv6"),
+            daemon=True
+        )
+
+        ipv4_thread.start()
+        ipv6_thread.start()
 
         try:
             while True:
-                client_socket, addr = server_socket.accept()
-
-                print(f"[+] Connection: {addr}")
-
-                request = self.receive_request(client_socket)
-
-                if request:
-                    response = self.processor.process_request(request)
-                    client_socket.sendall(response)
-
-                client_socket.close()
+                threading.Event().wait(1)
 
         except KeyboardInterrupt:
-            print("\n[!] Server stopped")
+            print("\n[!] Server stopping...")
 
         finally:
-            server_socket.close()
+            if self.ipv4_socket:
+                self.ipv4_socket.close()
+
+            if self.ipv6_socket:
+                self.ipv6_socket.close()
 
 
 if __name__ == "__main__":

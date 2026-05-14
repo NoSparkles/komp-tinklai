@@ -101,7 +101,7 @@ class WebClient:
 
 
 if __name__ == "__main__":
-    client = WebClient()
+    client = WebClient("http://[::1]:8888")
 
     # Upload
     #client.post_file("city.png")
